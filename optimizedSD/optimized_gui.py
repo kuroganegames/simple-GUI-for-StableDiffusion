@@ -240,7 +240,7 @@ class SDtxt2img:
 
 
         #ddim_steps
-        self.label_ddim_steps = tk.Label(self.root, text='ddim_steps(number of ddim sampling steps)')
+        self.label_ddim_steps = tk.Label(self.root, text='ddim_steps(number of ddim sampling steps, Please set in multiples of 5)')
         self.label_ddim_steps.grid(column = 1, row = 6)
         self.scale_ddim_steps = tk.Scale(
             master = self.root,
@@ -249,7 +249,7 @@ class SDtxt2img:
             length=600,
             tickinterval=50,
             orient=tk.HORIZONTAL,
-            resolution =   5,
+            resolution =   1,
             # command=lambda val : var.set(scale.get()) 
         )
         self.scale_ddim_steps.set(50)
