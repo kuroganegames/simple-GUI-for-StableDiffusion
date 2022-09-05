@@ -16,6 +16,13 @@ from torch import autocast
 from contextlib import contextmanager, nullcontext
 from einops import rearrange, repeat
 from ldm.util import instantiate_from_config
+from optimUtils import split_weighted_subprompts, logger
+from transformers import logging
+import pandas as pd
+logging.set_verbosity_error()
+
+from tkinterdnd2 import *
+
 
 import copy
 
@@ -66,7 +73,7 @@ class SDtxt2img:
         self.ckpt = "models/ldm/stable-diffusion-v1/model.ckpt"
         self.device = "cuda"
 
-        # self.dir_img_init = dir_img_init
+
         
         self.sd = load_model_from_config(f"{self.ckpt}")
         li = []
@@ -96,261 +103,380 @@ class SDtxt2img:
     def GUI(self):
         self.root = tk.Tk()
         self.root.title("Stable Diffusion GUI")
-        self.root.geometry("1300x900")
+        self.root.geometry("1400x700")
+        
+        
+        
+        # mode プルダウン
+        self.label_mode = tk.Label(self.root, text='mode')
+        self.label_mode.grid(column = 0, row = 0)
+        self.l_mode = ["txt2img","img2img"]
+        self.var_mode = tk.StringVar ( )
+        self.combo_mode = ttk.Combobox ( self.root , values = self.l_mode , textvariable = self.var_mode , width=8)
+        self.combo_mode.current(0)
+        self.combo_mode.grid(column = 1, row = 0)
+        
+        # format プルダウン
+        self.label_format = tk.Label(self.root, text='format\n("output image format")')
+        self.label_format.grid(column = 2, row = 0)
+        self.l_format = ["png","jpg"]
+        self.var_format = tk.StringVar ( )
+        self.combo_format = ttk.Combobox ( self.root , values = self.l_format , textvariable = self.var_format  , width=4)
+        self.combo_format.current(0)
+        self.combo_format.grid(column = 3, row = 0)
+        
+        
+        # device プルダウン
+        self.label_device = tk.Label(self.root, text='device\nspecify GPU (cuda/cuda:0/cuda:1/...)')#
+        self.label_device.grid(column = 5, row = 0)
+        self.l_device = ["cuda","cpu","cuda:0","cuda:1","cuda:2","cuda:3"]
+        self.var_device = tk.StringVar ( )
+        self.combo_device = ttk.Combobox ( self.root , values = self.l_device , textvariable = self.var_device  , width=7)
+        self.combo_device.current(0)
+        self.combo_device.grid(column = 6, row = 0)
+                
+        #dir_img
+        self.label_dir_img = tk.Label(self.root, text='init-img\n(path to the input image)')
+        self.label_dir_img.grid(column = 0, row = 1)
+
+        self.box_dir_img = tk.Entry(self.root, width=30)
+        self.box_dir_img.grid(column = 1, row = 1, columnspan = 6, sticky = tk.W+tk.E)
+        
+        # self.separator = ttk.Separator(self.root, orient="horizontal", style="blue.TSeparator")
+        
+
         
         
         # prompt
         self.label_prompt = tk.Label(self.root, text='prompt(the prompt to rende)')
-        self.label_prompt.grid(column = 0, row = 0)
+        self.label_prompt.grid(column = 0, row = 2, columnspan = 2, sticky = tk.W+tk.E)
 
-        self.box_prompt = tk.Entry(self.root, width=100)
+        # self.box_prompt = tk.Entry(self.root, width=100)
+        # self.box_prompt = tk.Text(self.root, width=100)
+        self.box_prompt = tk.Text(self.root ,height=5)
         self.box_prompt.insert(tk.END,"a painting of a virus monster playing guitar")
-        self.box_prompt.grid(column = 0, row = 1)
+        self.box_prompt.grid(column = 0, row = 3, columnspan = 9, sticky = tk.W+tk.E)
         # jumon
         self.label_jumon = tk.Label(self.root, text='jumon')
-        self.label_jumon.grid(column = 0, row = 2)
+        self.label_jumon.grid(column = 0, row = 4, columnspan = 2, sticky = tk.W+tk.E)
 
-        self.box_jumon = tk.Entry(self.root, width=100)
+        # self.box_jumon = tk.Entry(self.root, width=100)
+        self.box_jumon = tk.Text(self.root ,height=2)
         self.box_jumon.insert(tk.END,"canon 5D, ultra detailed")
-        self.box_jumon.grid(column = 0, row = 3)
+        self.box_jumon.grid(column = 0, row = 5, columnspan = 9, sticky = tk.W+tk.E)
         
-        # mode プルダウン
-        self.label_mode = tk.Label(self.root, text='mode')
-        self.label_mode.grid(column = 0, row = 4)
-        self.l_mode = ["txt2img","img2img"]
-        self.var_mode = tk.StringVar ( )
-        self.combo_mode = ttk.Combobox ( self.root , values = self.l_mode , textvariable = self.var_mode )
-        self.combo_mode.current(0)
-        self.combo_mode.grid(column = 0, row = 5)
+
         
         #dir_out
-        self.label_dir_output = tk.Label(self.root, text='outdir(dir to write results to)')
+        self.label_dir_output = tk.Label(self.root, text='outdir(dir to write results to, \ndefault:txt2img-samples or img2img-samples)')
         self.label_dir_output.grid(column = 0, row = 6)
 
-        self.box_dir_output = tk.Entry(self.root, width=100)
+        self.box_dir_output = tk.Entry(self.root, width=30)
         # self.box_dir_output.insert(tk.END,"outputs/img2img-samples")
-        self.box_dir_output.grid(column = 0, row = 7)
+        self.box_dir_output.grid(column = 1, row = 6, columnspan = 3, sticky = tk.W+tk.E)
 
-        #dir_img
-        self.label_dir_img = tk.Label(self.root, text='init-img(path to the input image)')
-        self.label_dir_img.grid(column = 0, row = 8)
+        
+        # from_file
+        self.label_from_file = tk.Label(self.root, text='from_file\n(load prompts from this file)')
+        self.label_from_file.grid(column = 5, row = 6)
+        self.box_from_file = tk.Entry(self.root)
+        self.box_from_file.grid(column = 6, row = 6, columnspan = 3, sticky = tk.W+tk.E)
 
-        self.box_dir_img = tk.Entry(self.root, width=100)
-        self.box_dir_img.grid(column = 0, row = 9)
+
+
+        # i_img_H i_img_W
+        self.label_img = tk.Label(self.root, text='image resolution')
+        self.label_img.grid(column = 0, row = 7)
+        self.label_img_H = tk.Label(self.root, text='H')
+        self.label_img_H.grid(column = 1, row = 7)
+        self.box_img_H = tk.Entry(self.root, width=5)
+        self.box_img_H.insert(tk.END,"512")
+        self.box_img_H.grid(column = 2, row = 7)
+        self.label_img_W = tk.Label(self.root, text='W')
+        self.label_img_W.grid(column = 3, row = 7)
+        self.box_img_W = tk.Entry(self.root, width=5)
+        self.box_img_W.insert(tk.END,"512")
+        self.box_img_W.grid(column = 4, row = 7)
+
+
+        # turbo.ラジオボタン作成
+        self.label_turbo = tk.Label(self.root, text='turbo?')
+        self.label_turbo.grid(column = 5, row = 7)
+        self.var_turbo = tk.IntVar()
+        self.var_turbo.set(0)
+        self.rdo_turbo_1 = tk.Radiobutton(self.root, value=1, variable=self.var_turbo, text='True')
+        self.rdo_turbo_1.grid(column = 6, row = 7)
+        self.rdo_turbo_0 = tk.Radiobutton(self.root, value=0, variable=self.var_turbo, text='False')
+        self.rdo_turbo_0.grid(column = 7, row = 7)
+
+
+
 
         # i_seed
         self.label_i_seed = tk.Label(self.root, text='the seed (for reproducible sampling)')
-        self.label_i_seed.grid(column = 0, row = 10)
+        self.label_i_seed.grid(column = 0, row = 8)
+
+        # b_random_seed.ラジオボタン作成
+        self.label_random_seed = tk.Label(self.root, text='random seed?')
+        self.label_random_seed.grid(column = 1, row = 8)
+        self.var_random_seed = tk.IntVar()
+        self.var_random_seed.set(1)
+        self.rdo_random_seed_1 = tk.Radiobutton(self.root, value=1, variable=self.var_random_seed, text='True')
+        self.rdo_random_seed_1.grid(column = 2, row = 8)
+        self.rdo_random_seed_0 = tk.Radiobutton(self.root, value=0, variable=self.var_random_seed, text='False')
+        self.rdo_random_seed_0.grid(column = 3, row = 8)
+        
+        
+        """
         self.scale_i_seed = tk.Scale(
             master = self.root,
             from_ = 1,
-            to=501,
-            length=600,
+            to=1201,
+            # length=600,
             tickinterval=50,
             orient=tk.HORIZONTAL,
             # command=lambda val : var.set(scale.get()) 
         )
-        self.scale_i_seed.grid(column = 0, row = 11)
+        self.scale_i_seed.grid(column = 0, row = 9, columnspan = 9, sticky = tk.W+tk.E)
+        """
 
-        # i_img_H i_img_W
-        self.label_img_H = tk.Label(self.root, text='H')
-        self.label_img_H.grid(column = 0, row = 12)
-        self.box_img_H = tk.Entry(self.root, width=100)
-        self.box_img_H.insert(tk.END,"512")
-        self.box_img_H.grid(column = 0, row = 13)
-        self.label_img_W = tk.Label(self.root, text='W')
-        self.label_img_W.grid(column = 0, row = 14)
-        self.box_img_W = tk.Entry(self.root, width=100)
-        self.box_img_W.insert(tk.END,"512")
-        self.box_img_W.grid(column = 0, row = 15)
+        self.var_random_seed_sp = tk.StringVar()
+        self.sp_seed = tk.Spinbox(self.root,
+                                textvariable=self.var_random_seed_sp,
+                                from_=0,
+                                to=1000000,
+                                increment=1, 
+                                width=8)
 
+        self.sp_seed.grid(column = 4, row = 8)
 
-
-        # b_small_batch.ラジオボタン作成
-        self.label_small_batch = tk.Label(self.root, text='small_batch(Reduce inference time when generate a smaller batch of images)')
-        self.label_small_batch.grid(column = 0, row = 16)
-        self.var_small_batch = tk.IntVar()
-        self.var_small_batch.set(0)
-        self.rdo_small_batch_1 = tk.Radiobutton(self.root, value=1, variable=self.var_small_batch, text='True')
-        self.rdo_small_batch_1.grid(column = 0, row = 17)
-        self.rdo_small_batch_0 = tk.Radiobutton(self.root, value=0, variable=self.var_small_batch, text='False')
-        self.rdo_small_batch_0.grid(column = 0, row = 18)
-
-        # precision プルダウン
-        self.label_precision = tk.Label(self.root, text='precision(evaluate at this precision)')
-        self.label_precision.grid(column = 0, row = 19)
-        self.l_precision = ["autocast","full"]
-        self.var_precision = tk.StringVar ( )
-        self.combo_precision = ttk.Combobox ( self.root , values = self.l_precision , textvariable = self.var_precision )
-        self.combo_precision.current(0)
-        self.combo_precision.grid(column = 0, row = 20)
 
         #n_samples
-        self.label_n_samples = tk.Label(self.root, text='n_samples(how many samples to produce for each given prompt. A.k.a. batch size)')
-        self.label_n_samples.grid(column = 0, row = 21)
+        self.label_n_samples = tk.Label(self.root, text='n_samples(A.k.a. batch size\nhow many samples to produce \nfor each given prompt. )')
+        self.label_n_samples.grid(column = 0, row = 13)
         self.scale_n_samples = tk.Scale(
             master = self.root,
             from_ = 1,
             to=11,
-            length=600,
+            # length=600,
             tickinterval=1,
             orient=tk.HORIZONTAL,
             # command=lambda val : var.set(scale.get()) 
         )
         self.scale_n_samples.set(1)
-        self.scale_n_samples.grid(column = 0, row = 22)
+        self.scale_n_samples.grid(column = 1, row = 13, columnspan = 4, sticky = tk.W+tk.E)
 
-        #n_rows
-        self.label_n_rows = tk.Label(self.root, text='rows in the grid (default: n_samples)')
-        self.label_n_rows.grid(column = 1, row = 0)
-        self.scale_n_rows = tk.Scale(
+        #n_iter
+        self.label_n_iter = tk.Label(self.root, text='n_iter(sample this often)')
+        self.label_n_iter.grid(column = 5, row = 13)
+        self.scale_n_iter = tk.Scale(
             master = self.root,
-            from_ = 0,
-            to=10,
-            length=600,
-            tickinterval=1,
+            from_ = 1,
+            # to=11,
+            to=501,
+            length=400,
+            tickinterval=50,
             orient=tk.HORIZONTAL,
             # command=lambda val : var.set(scale.get()) 
         )
-        self.scale_n_rows.set(0)
-        self.scale_n_rows.grid(column = 1, row = 1)
+        self.scale_n_iter.set(1)
+        self.scale_n_iter.grid(column = 6, row = 13, columnspan = 3, sticky = tk.W+tk.E)
 
-        # from_file
-        self.label_from_file = tk.Label(self.root, text='from_file(if specified, load prompts from this file)')
-        self.label_from_file.grid(column = 1, row = 2)
-        self.box_from_file = tk.Entry(self.root, width=100)
-        self.box_from_file.grid(column = 1, row = 3)
+
+
+        #ddim_steps
+        self.label_ddim_steps = tk.Label(self.root, text='ddim_steps\n(number of ddim sampling steps,\nPlease set in multiples of 5)')
+        self.label_ddim_steps.grid(column = 0, row = 14)
+        self.scale_ddim_steps = tk.Scale(
+            master = self.root,
+            from_ = 5,
+            to=300,
+            # length=600,
+            tickinterval=50,
+            orient=tk.HORIZONTAL,
+            resolution =   5,
+            # command=lambda val : var.set(scale.get()) 
+        )
+        self.scale_ddim_steps.set(50)
+        self.scale_ddim_steps.grid(column = 1, row = 14, columnspan = 4, sticky = tk.W+tk.E)
+
+
 
         #strength
-        self.label_strength = tk.Label(self.root, text='strength(strength for noising/unnoising. 1.0 corresponds to full destruction of information in init image)')
-        self.label_strength.grid(column = 1, row = 4)
+        self.label_strength = tk.Label(self.root, text='strength(for noising/unnoising. \n1.0 corresponds to full destruction\n of information in init image)')
+        self.label_strength.grid(column = 5, row = 14)
         self.scale_strength = tk.Scale(
             master = self.root,
             from_ = 0,
             to=1,
-            length=600,
+            # length=600,
             tickinterval=0.1,
             resolution =   0.01,
             orient=tk.HORIZONTAL,
             # command=lambda val : var.set(scale.get()) 
         )
         self.scale_strength.set(0.75)
-        self.scale_strength.grid(column = 1, row = 5)
+        self.scale_strength.grid(column = 6, row = 14, columnspan = 3, sticky = tk.W+tk.E)
 
 
-
-        #ddim_steps
-        self.label_ddim_steps = tk.Label(self.root, text='ddim_steps(number of ddim sampling steps, Please set in multiples of 5)')
-        self.label_ddim_steps.grid(column = 1, row = 6)
-        self.scale_ddim_steps = tk.Scale(
+    
+        #n_rows
+        self.label_n_rows = tk.Label(self.root, text='rows in the grid \n(default: n_samples)')
+        self.label_n_rows.grid(column = 0, row = 15)
+        self.scale_n_rows = tk.Scale(
             master = self.root,
-            from_ = 1,
-            to=301,
-            length=600,
-            tickinterval=50,
-            orient=tk.HORIZONTAL,
-            resolution =   1,
-            # command=lambda val : var.set(scale.get()) 
-        )
-        self.scale_ddim_steps.set(50)
-        self.scale_ddim_steps.grid(column = 1, row = 7)
-
-        #n_iter
-        self.label_n_iter = tk.Label(self.root, text='n_iter(sample this often)')
-        self.label_n_iter.grid(column = 1, row = 8)
-        self.scale_n_iter = tk.Scale(
-            master = self.root,
-            from_ = 1,
-            to=11,
-            length=600,
-            tickinterval=2,
+            from_ = 0,
+            to=10,
+            # length=600,
+            tickinterval=1,
             orient=tk.HORIZONTAL,
             # command=lambda val : var.set(scale.get()) 
         )
-        self.scale_n_iter.set(1)
-        self.scale_n_iter.grid(column = 1, row = 9)
+        self.scale_n_rows.set(0)
+        self.scale_n_rows.grid(column = 1, row = 15, columnspan = 4, sticky = tk.W+tk.E)
+
+
+
+
+
+
 
         # scale
-        self.label_scale = tk.Label(self.root, text='scale(unconditional guidance scale: eps = eps(x, empty) + scale * (eps(x, cond) - eps(x, empty)))')
-        self.label_scale.grid(column = 1, row = 10)
+        self.label_scale = tk.Label(self.root, text='scale(unconditional guidance scale\neps = eps(x, empty) + scale * (eps(x, cond) - eps(x, empty)))')
+        self.label_scale.grid(column = 5, row = 15)
         self.scale_scale = tk.Scale(
             master = self.root,
             from_ = 0.01,
             to=20,
-            length=600,
+            # length=600,
             tickinterval=2,
             resolution =   0.01,
             orient=tk.HORIZONTAL,
             # command=lambda val : var.set(scale.get()) 
         )
         self.scale_scale.set(7.5)
-        self.scale_scale.grid(column = 1, row = 11)
+        self.scale_scale.grid(column = 6, row = 15, columnspan = 3, sticky = tk.W+tk.E)
         
+
+
+
+
         
-        
+
+
+
         # fixed_code ラジオボタン作成
-        self.label_fixed_code = tk.Label(self.root, text='fixed_code(if enabled, uses the same starting code across samples)')
-        self.label_fixed_code.grid(column = 1, row = 12)
+        self.label_fixed_code = tk.Label(self.root, text='fixed_code(if enabled,\nuses the same starting code\nacross samples)')
+        self.label_fixed_code.grid(column = 0, row = 16)
         self.var_fixed_code = tk.IntVar()
         self.var_fixed_code.set(0)
-        self.rdo_fixed_code_1 = tk.Radiobutton(self.root, value=1, variable=self.var_small_batch, text='True')
-        self.rdo_fixed_code_1.grid(column = 1, row = 13)
-        self.rdo_fixed_code_0 = tk.Radiobutton(self.root, value=0, variable=self.var_small_batch, text='False')
-        self.rdo_fixed_code_0.grid(column = 1, row = 14)
+        self.rdo_fixed_code_1 = tk.Radiobutton(self.root, value=1, variable=self.var_fixed_code, text='True')
+        self.rdo_fixed_code_1.grid(column = 1, row = 16)
+        self.rdo_fixed_code_0 = tk.Radiobutton(self.root, value=0, variable=self.var_fixed_code, text='False')
+        self.rdo_fixed_code_0.grid(column = 2, row = 16)
+
+
+
+        # precision プルダウン
+        self.label_precision = tk.Label(self.root, text='precision(evaluate at this precision)')
+        self.label_precision.grid(column = 6, row = 16)
+        self.l_precision = ["autocast","full"]
+        self.var_precision = tk.StringVar ( )
+        self.combo_precision = ttk.Combobox ( self.root , values = self.l_precision , textvariable = self.var_precision )
+        self.combo_precision.current(0)
+        self.combo_precision.grid(column = 7, row = 16)
+        
+
+
+
+        
+
+        
+
         
         
         
         #C
         self.label_C = tk.Label(self.root, text='C(latent channels)')
-        self.label_C.grid(column = 1, row = 15)
+        self.label_C.grid(column = 0, row = 17)
         self.scale_C = tk.Scale(
             master = self.root,
             from_ = 0,
             to=10,
-            length=600,
+            # length=600,
             tickinterval=2,
             orient=tk.HORIZONTAL,
             # command=lambda val : var.set(scale.get()) 
         )
         self.scale_C.set(4)
-        self.scale_C.grid(column = 1, row = 16)
+        self.scale_C.grid(column = 1, row = 17, columnspan = 4, sticky = tk.W+tk.E)
         
         #f
         self.label_f = tk.Label(self.root, text='f(downsampling factor)')
-        self.label_f.grid(column = 1, row = 17)
+        self.label_f.grid(column = 5, row = 17)
         self.scale_f = tk.Scale(
             master = self.root,
             from_ = 0,
             to=10,
-            length=600,
+            # length=600,
             tickinterval=2,
             orient=tk.HORIZONTAL,
             # command=lambda val : var.set(scale.get()) 
         )
         self.scale_f.set(8)
-        self.scale_f.grid(column = 1, row = 18)
+        self.scale_f.grid(column = 6, row = 17, columnspan = 3, sticky = tk.W+tk.E)
         
+        
+        
+
+        
+        # unet_bs
+        self.label_unet_bs = tk.Label(self.root, text='unet_bs \n"Slightly reduces inference time\nat the expense of high VRAM (value > 1 not recommended )')
+        self.label_unet_bs.grid(column = 0, row = 18)
+        self.scale_unet_bs = tk.Scale(
+            master = self.root,
+            from_ = 0,
+            to=5,
+            # length=600,
+            tickinterval=1,
+            resolution =   1,
+            orient=tk.HORIZONTAL,
+            # command=lambda val : var.set(scale.get()) 
+        )
+        self.scale_unet_bs.set(1)
+        self.scale_unet_bs.grid(column = 1, row = 18, columnspan = 4, sticky = tk.W+tk.E)
         
         # ddim_eta
-        self.label_ddim_eta = tk.Label(self.root, text='ddim eta (eta=0.0 corresponds to deterministic sampling')
-        self.label_ddim_eta.grid(column = 1, row = 19)
+        self.label_ddim_eta = tk.Label(self.root, text='ddim eta \n(eta=0.0 corresponds \nto deterministic sampling')
+        self.label_ddim_eta.grid(column = 5, row = 18)
         self.scale_ddim_eta = tk.Scale(
             master = self.root,
             from_ = 0.0,
             to=1,
-            length=600,
+            # length=600,
             tickinterval=0.1,
             resolution =   0.1,
             orient=tk.HORIZONTAL,
             # command=lambda val : var.set(scale.get()) 
         )
         self.scale_ddim_eta.set(0.0)
-        self.scale_ddim_eta.grid(column = 1, row = 20)
+        self.scale_ddim_eta.grid(column = 6, row = 18, columnspan = 3, sticky = tk.W+tk.E)
+        
+        
+        # b_small_batch.ラジオボタン作成
+        # self.label_small_batch = tk.Label(self.root, text='small_batch(Reduce inference time \nwhen generate a smaller batch of images)')
+        # self.label_small_batch.grid(column = 0, row = 19)
+        # self.var_small_batch = tk.IntVar()
+        # self.var_small_batch.set(0)
+        # self.rdo_small_batch_1 = tk.Radiobutton(self.root, value=1, variable=self.var_small_batch, text='True')
+        # self.rdo_small_batch_1.grid(column = 1, row = 19)
+        # self.rdo_small_batch_0 = tk.Radiobutton(self.root, value=0, variable=self.var_small_batch, text='False')
+        # self.rdo_small_batch_0.grid(column = 2, row = 19)
         
         
 
         self.button = tk.Button(text="生成")
-        self.button.grid(column = 1, row = 21)
+        self.button.grid(column = 4, row = 19)
         self.button.bind("<Button-1>",self.click) 
 
         self.root.mainloop()
@@ -360,9 +486,11 @@ class SDtxt2img:
     def click(self, event):
         print(
         self.box_dir_output.get(),"\n",
-        self.box_prompt.get(),"\n",
-        self.scale_i_seed.get(),"\n",
-        self.var_small_batch.get(),"\n",
+        # self.box_prompt.get(),"\n",
+        self.box_prompt.get( "1.0", "end"),"\n",
+        # self.scale_i_seed.get(),"\n",
+        self.var_random_seed_sp.get(),"\n",
+        # self.var_small_batch.get(),"\n",
         self.box_dir_img.get(),"\n",
         self.box_img_H.get(),"\n",
         self.box_img_W.get(),"\n",
@@ -380,7 +508,15 @@ class SDtxt2img:
         self.scale_f.get(),"\n",
         self.scale_ddim_eta.get(),"\n",
         
+        # self.var_turbo,"\n",
+        # self.combo_format,"\n",
+        # self.var_device   ,"\n",  
+        # self.scale_unet_bs,"\n",
         )
+        
+        
+
+        
         # print(
         # type(box_dir_output.get()),"\n",
         # type(box_prompt.get()),"\n",
@@ -399,45 +535,85 @@ class SDtxt2img:
         # type(scale_n_iter.get()),"\n",
         # type(scale_scale.get()),"\n",
         # )
-        self.run(
-            self.box_dir_output.get(),
-            self.box_prompt.get(),
-            self.box_jumon.get(),
-            self.scale_i_seed.get(),
-            self.var_small_batch.get(),
-            self.box_dir_img.get(),
-            int(self.box_img_H.get()),
-            int(self.box_img_W.get()),
-            self.var_precision.get(),
-            self.scale_n_samples.get(),
-            self.scale_n_rows.get(),
-            self.box_from_file.get(),
-            self.scale_strength.get(),
-            self.scale_ddim_steps.get(),
-            self.scale_n_iter.get(),
-            self.scale_scale.get(),
-            self.var_mode.get(),
-            self.var_fixed_code.get(),
-            self.scale_C.get(),
-            self.scale_f.get(),
-            self.scale_ddim_eta.get(),
-            )
+        
+        
+        l_prompts = [i for i in self.box_prompt.get( "1.0", "end").split("\n") if i!=""]
+        print(l_prompts)
+        
+        
+        for each_prompt in l_prompts:
+
+            self.run(each_prompt)
+            """self.run(
+                self.box_dir_output.get(),
+                # self.box_prompt.get(),
+                # self.box_prompt.get( "1.0", "end"),
+                each_prompt,
+                # self.box_jumon.get(),
+                self.box_jumon.get( "1.0", "end"),
+                self.scale_i_seed.get(),
+                self.var_small_batch.get(),
+                self.box_dir_img.get(),
+                int(self.box_img_H.get()),
+                int(self.box_img_W.get()),
+                self.var_precision.get(),
+                self.scale_n_samples.get(),
+                self.scale_n_rows.get(),
+                self.box_from_file.get(),
+                self.scale_strength.get(),
+                self.scale_ddim_steps.get(),
+                self.scale_n_iter.get(),
+                self.scale_scale.get(),
+                self.var_mode.get(),
+                self.var_fixed_code.get(),
+                self.scale_C.get(),
+                self.scale_f.get(),
+                self.scale_ddim_eta.get(),
+                )"""
+
+            
         # print(
         
         
-    def run(self,dir_out,s_prompt,s_jumon,i_seed,b_small_batch,dir_img,i_img_H,i_img_W,s_precision,i_n_samples,i_n_rows,s_from_file,f_strength,i_ddim_steps,i_n_iter,f_scale, s_mode,b_fixed_code,i_C,i_f,f_ddim_eta):
+    # def run(self,dir_out,s_prompt,s_jumon,i_seed,b_small_batch,dir_img,i_img_H,i_img_W,s_precision,i_n_samples,i_n_rows,s_from_file,f_strength,i_ddim_steps,i_n_iter,f_scale, s_mode,b_fixed_code,i_C,i_f,f_ddim_eta):
+    def run(self, s_prompt):
+    
+        # dir_out,
+        # s_prompt,
+        s_jumon = self.box_jumon.get( "1.0", "end")
+        i_seed = int(self.var_random_seed_sp.get())
+        # b_sm  all_batch = self.var_small_batch.get()
+        dir_img = self.box_dir_img.get().replace("\"","")
+        i_img_H = int(self.box_img_H.get())
+        i_img_W = int(self.box_img_W.get())
+        s_precision = self.var_precision.get()
+        i_n_samples = self.scale_n_samples.get()
+        i_n_rows = self.scale_n_rows.get()
+        s_from_file = self.box_from_file.get()
+        f_strength = self.scale_strength.get()
+        i_ddim_steps = self.scale_ddim_steps.get()
+        i_n_iter = self.scale_n_iter.get()
+        f_scale = self.scale_scale.get()
+        s_mode = self.var_mode.get()
+        b_fixed_code = self.var_fixed_code.get()
+        i_C = self.scale_C.get()
+        i_f = self.scale_f.get()
+        f_ddim_eta = self.scale_ddim_eta.get()
+        
 
         # 保存先の設定  
         tic = time.time()
         
-        if dir_out=="":
+        if self.box_dir_output.get()=="":
             if s_mode == "txt2img":
-                dir_out="outputs/txt2img-samples"
+                outpath="outputs/txt2img-samples"
             else:
-                dir_out="outputs/img2img-samples"
+                outpath="outputs/img2img-samples"
+        else:
+            outpath=self.box_dir_output.get()
         
-        os.makedirs(dir_out, exist_ok=True)
-        outpath = dir_out
+        os.makedirs(outpath, exist_ok=True)
+        # outpath = dir_out
         
         if s_jumon=="":
             s_prompt_gen = s_prompt
@@ -450,20 +626,26 @@ class SDtxt2img:
         grid_count = len(os.listdir(outpath)) - 1
 
         #シード値の設定
-        if i_seed == None:
+        # if i_seed == None:
+        if self.var_random_seed.get():
             i_seed = randint(0, 1000000)
+        else:
+            i_seed = self.scale_i_seed.get()
         print("init_seed = ", i_seed)
         seed_everything(i_seed)#再現性のあるシード値の設定
 
         #モデル/設定ロードは上部に移動
 
         # 設定切り替え
-        if b_small_batch:
-            self.config.modelUNet.params.small_batch = True
-        else:
-            self.config.modelUNet.params.small_batch = False
+        # if s_mode == "txt2img":
+            # if b_small_batch:
+                # self.config.modelUNet.params.small_batch = True
+            # else:
+                # self.config.modelUNet.params.small_batch = False
 
+                
             
+        self.device = self.var_device.get()
         if s_mode == "img2img":
             assert os.path.isfile(dir_img)
             init_image = load_img(dir_img, i_img_H, i_img_W).to(self.device)
@@ -471,22 +653,32 @@ class SDtxt2img:
         model = instantiate_from_config(self.config.modelUNet)
         _, _ = model.load_state_dict(self.sd, strict=False)
         model.eval()
-            
+        model.unet_bs = self.scale_unet_bs.get()
+        model.cdevice = self.device
+        model.turbo = self.var_turbo.get()
+                
         modelCS = instantiate_from_config(self.config.modelCondStage)
         _, _ = modelCS.load_state_dict(self.sd, strict=False)
         modelCS.eval()
+        modelCS.cond_stage_model.device = self.device
             
         modelFS = instantiate_from_config(self.config.modelFirstStage)
         _, _ = modelFS.load_state_dict(self.sd, strict=False)
         modelFS.eval()
         # del self.sd
-        if s_precision == "autocast":
+
+                
+        if self.device != "cpu" and s_precision == "autocast":
             model.half()
             modelCS.half()
+            
             if s_mode == "img2img":
                 modelFS.half()
                 init_image = init_image.half()
-                
+            
+
+            
+            
         if s_mode == "txt2img":
             start_code = None
             if b_fixed_code:
@@ -504,6 +696,8 @@ class SDtxt2img:
             print(f"reading prompts from {s_from_file}")
             with open(s_from_file, "r") as f:
                 data = f.read().splitlines()
+                if s_mode == "img2img":
+                    data = batch_size * list(data)
                 data = list(chunk(data, batch_size))
 
         if s_mode == "img2img":
@@ -512,10 +706,11 @@ class SDtxt2img:
             init_image = repeat(init_image, '1 ... -> b ...', b=batch_size)
             init_latent = modelFS.get_first_stage_encoding(modelFS.encode_first_stage(init_image))  # move to latent space
 
-            mem = torch.cuda.memory_allocated()/1e6
-            modelFS.to("cpu")
-            while(torch.cuda.memory_allocated()/1e6 >= mem):
-                time.sleep(1)
+            if self.device != "cpu":
+                mem = torch.cuda.memory_allocated()/1e6
+                modelFS.to("cpu")
+                while(torch.cuda.memory_allocated()/1e6 >= mem):
+                    time.sleep(1)
 
 
             assert 0. <= f_strength <= 1., 'can only work with strength in [0.0, 1.0]'
@@ -527,7 +722,14 @@ class SDtxt2img:
 
 
 
-        precision_scope = autocast if s_precision=="autocast" else nullcontext
+
+        if s_precision == "autocast" and self.device != "cpu":
+            precision_scope = autocast
+        else:
+            precision_scope = nullcontext
+            
+            
+
         with torch.no_grad():
 
             all_samples = list()
@@ -550,21 +752,57 @@ class SDtxt2img:
                     if isinstance(prompts, tuple):
                         prompts = list(prompts)
                     
-                    c = modelCS.get_learned_conditioning(prompts)
+                    # if s_mode == "img2img":
+                    subprompts, weights = split_weighted_subprompts(prompts[0])
+                    if len(subprompts) > 1:
+                        c = torch.zeros_like(uc)
+                        totalWeight = sum(weights)
+                        # normalize each "sub prompt" and add it
+                        for i in range(len(subprompts)):
+                            weight = weights[i]
+                            # if not skip_normalize:
+                            weight = weight / totalWeight
+                            c = torch.add(c, modelCS.get_learned_conditioning(subprompts[i]), alpha=weight)
+                    else:
+                        c = modelCS.get_learned_conditioning(prompts)
+                    # else:
+                        # c = modelCS.get_learned_conditioning(prompts)
+                    # shape = [opt.C, opt.H // opt.f, opt.W // opt.f]
+
+                        
                     if s_mode == "txt2img":
                         shape = [i_C, i_img_H // i_f, i_img_W // i_f]
-                    mem = torch.cuda.memory_allocated()/1e6
-                    modelCS.to("cpu")
-                    while(torch.cuda.memory_allocated()/1e6 >= mem):
-                        time.sleep(1)
+                        # mem = torch.cuda.memory_allocated()/1e6
+                        # modelCS.to("cpu")
+                        # while(torch.cuda.memory_allocated()/1e6 >= mem):
+                            # time.sleep(1)
+                            
+                    if self.device != "cpu":
+                        mem = torch.cuda.memory_allocated()/1e6
+                        modelCS.to("cpu")
+                        while(torch.cuda.memory_allocated()/1e6 >= mem):
+                            time.sleep(1)
                         
                         
                     if s_mode == "img2img":
+
                         # encode (scaled latent)
-                        z_enc = model.stochastic_encode(init_latent, torch.tensor([t_enc]*batch_size).to(self.device), i_seed,i_ddim_steps)
+                        z_enc = model.stochastic_encode(
+                            init_latent,
+                            torch.tensor([t_enc] * batch_size).to(self.device),
+                            i_seed,
+                            f_ddim_eta,
+                            i_ddim_steps,
+                        )
                         # decode it
-                        samples_ddim = model.decode(z_enc, c, t_enc, unconditional_guidance_scale=f_scale,
-                                                    unconditional_conditioning=uc,)
+                        samples_ddim = model.decode(
+                            z_enc,
+                            c,
+                            t_enc,
+                            unconditional_guidance_scale=f_scale,
+                            unconditional_conditioning=uc,
+                        )
+
 
                     else:
                         samples_ddim = model.sample(S=i_ddim_steps,
@@ -593,10 +831,13 @@ class SDtxt2img:
                         base_count += 1
 
 
-                    mem = torch.cuda.memory_allocated()/1e6
-                    modelFS.to("cpu")
-                    while(torch.cuda.memory_allocated()/1e6 >= mem):
-                        time.sleep(1)
+
+                            
+                    if self.device != "cpu":
+                        mem = torch.cuda.memory_allocated()/1e6
+                        modelFS.to("cpu")
+                        while(torch.cuda.memory_allocated()/1e6 >= mem):
+                            time.sleep(1)
 
                     del samples_ddim
                     print("memory_final = ", torch.cuda.memory_allocated()/1e6)
